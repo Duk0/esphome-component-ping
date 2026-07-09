@@ -26,7 +26,8 @@ class PingSensor : public sensor::Sensor, public PollingComponent {
   Sensor *latency_sensor = new Sensor();
 
   /* the sensor must be started after connecting WiFi */
-  float get_setup_priority() const override { return esphome::setup_priority::AFTER_WIFI; }
+  //float get_setup_priority() const override { return esphome::setup_priority::AFTER_WIFI; }
+  float get_setup_priority() const override { return esphome::setup_priority::AFTER_CONNECTION; }
 
   void set_n_packet(uint32_t n) { n_packet = n; }
   void set_target(const std::string address) { target = address; }

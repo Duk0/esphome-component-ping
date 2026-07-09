@@ -20,7 +20,8 @@
 #include "lwip/inet.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
-#include "ping_sock.h"
+//#include "ping_sock.h"
+#include "ping/ping_sock.h"
 #include "esp_err.h"
 
 #include "esphome/components/sensor/sensor.h"
@@ -56,6 +57,40 @@ class PingSensorESP32 : public PingSensor {
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "esp_ping_start: %s", esp_err_to_name(err));
     }
+  }
+
+  void stop() {
+    if (ping == NULL) return;
+
+    esp_err_t err = ESP_FAIL;
+
+    err = esp_ping_delete_session(ping);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "esp_ping_delete_session: %s", esp_err_to_name(err));
+    }
+
+    err = esp_ping_stop(ping);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "esp_ping_stop: %s", esp_err_to_name(err));
+    }
+  }
+
+  void restart() {
+    if (ping == NULL) return;
+
+    esp_err_t err = ESP_FAIL;
+
+    err = esp_ping_delete_session(ping);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "esp_ping_delete_session: %s", esp_err_to_name(err));
+    }
+
+    err = esp_ping_stop(ping);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "esp_ping_stop: %s", esp_err_to_name(err));
+    }
+    
+    init_ping();
   }
 
  private:
@@ -117,15 +152,19 @@ class PingSensorESP32 : public PingSensor {
       mean = total_success_time / received;
     }
 
-#if CONFIG_LWIP_IPV6
+//#if CONFIG_LWIP_IPV6
     if (IP_IS_V4(&target_addr)) {
-#endif
+//#endif
       ESP_LOGD(TAG, "--- %s ping statistics ---", inet_ntoa(*ip_2_ip4(&target_addr)));
-#if CONFIG_LWIP_IPV6
+//#if CONFIG_LWIP_IPV6
     } else {
-      ESP_LOGD(TAG, "--- %s ping statistics ---", inet6_ntoa(*ip_2_ip6(&target_addr)));
+      //ESP_LOGD(TAG, "--- %s ping statistics ---", inet6_ntoa(*ip_2_ip6(&target_addr)));
+
+      char addr_str[IPADDR_STRLEN_MAX];
+      ipaddr_ntoa_r(&target_addr, addr_str, sizeof(addr_str));
+      ESP_LOGD(TAG, "--- %s ping statistics ---", addr_str);
     }
-#endif
+//#endif
     ESP_LOGD(TAG, "%d packets transmitted, %d received, %d%% packet loss, total time %dms avg time %dms", transmitted,
              received, loss, total_time_ms, mean);
 
