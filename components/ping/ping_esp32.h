@@ -18,17 +18,19 @@
 
 #if defined(USE_ESP32)
 #include "lwip/inet.h"
+#include "lwip/netdb.h"
 #include "lwip/sockets.h"
-#include "ping_sock.h"
+//#include "ping_sock.h"
+#include "ping/ping_sock.h"
 #include "esp_err.h"
-#include <lwip/ip_addr.h>
 
 #include "esphome/components/sensor/sensor.h"
 
-#define TAG "ping_esp32"
-
 namespace esphome {
 namespace ping {
+
+static const char *const TAG = "ping_esp32";
+
 class PingSensorESP32 : public PingSensor {
  public:
   void setup() override { init_ping(); }
@@ -55,6 +57,40 @@ class PingSensorESP32 : public PingSensor {
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "esp_ping_start: %s", esp_err_to_name(err));
     }
+  }
+
+  void stop() {
+    if (ping == NULL) return;
+
+    esp_err_t err = ESP_FAIL;
+
+    err = esp_ping_delete_session(ping);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "esp_ping_delete_session: %s", esp_err_to_name(err));
+    }
+
+    err = esp_ping_stop(ping);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "esp_ping_stop: %s", esp_err_to_name(err));
+    }
+  }
+
+  void restart() {
+    if (ping == NULL) return;
+
+    esp_err_t err = ESP_FAIL;
+
+    err = esp_ping_delete_session(ping);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "esp_ping_delete_session: %s", esp_err_to_name(err));
+    }
+
+    err = esp_ping_stop(ping);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "esp_ping_stop: %s", esp_err_to_name(err));
+    }
+    
+    init_ping();
   }
 
  private:
@@ -85,29 +121,50 @@ class PingSensorESP32 : public PingSensor {
     this->incr_total_success_time(elapsed_time);
   }
 
+  void cmd_ping_on_ping_timeout(esp_ping_handle_t hdl) {
+    uint16_t seqno;
+    ip_addr_t target_addr;
+    esp_ping_get_profile(hdl, ESP_PING_PROF_SEQNO, &seqno, sizeof(seqno));
+    esp_ping_get_profile(hdl, ESP_PING_PROF_IPADDR, &target_addr, sizeof(target_addr));
+    ESP_LOGV(TAG, "From %s icmp_seq=%d timeout", ipaddr_ntoa((ip_addr_t *) &target_addr), seqno);
+  }
+
   void cmd_ping_on_ping_end(esp_ping_handle_t hdl) {
     ip_addr_t target_addr;
     uint32_t transmitted;
     uint32_t received;
     uint32_t total_time_ms;
+    uint32_t loss;
     int mean = 0;
 
     esp_ping_get_profile(hdl, ESP_PING_PROF_REQUEST, &transmitted, sizeof(transmitted));
     esp_ping_get_profile(hdl, ESP_PING_PROF_REPLY, &received, sizeof(received));
     esp_ping_get_profile(hdl, ESP_PING_PROF_IPADDR, &target_addr, sizeof(target_addr));
     esp_ping_get_profile(hdl, ESP_PING_PROF_DURATION, &total_time_ms, sizeof(total_time_ms));
-    uint32_t loss = (uint32_t)((1 - ((float) received) / transmitted) * 100);
+
+    if (transmitted > 0) {
+      loss = (uint32_t)((1 - ((float)received) / transmitted) * 100);
+    } else {
+      loss = 0;
+    }
+
     if (received != 0) {
       mean = total_success_time / received;
     }
 
+//#if CONFIG_LWIP_IPV6
     if (IP_IS_V4(&target_addr)) {
+//#endif
       ESP_LOGD(TAG, "--- %s ping statistics ---", inet_ntoa(*ip_2_ip4(&target_addr)));
+//#if CONFIG_LWIP_IPV6
     } else {
+      //ESP_LOGD(TAG, "--- %s ping statistics ---", inet6_ntoa(*ip_2_ip6(&target_addr)));
+
       char addr_str[IPADDR_STRLEN_MAX];
       ipaddr_ntoa_r(&target_addr, addr_str, sizeof(addr_str));
       ESP_LOGD(TAG, "--- %s ping statistics ---", addr_str);
     }
+//#endif
     ESP_LOGD(TAG, "%d packets transmitted, %d received, %d%% packet loss, total time %dms avg time %dms", transmitted,
              received, loss, total_time_ms, mean);
 
@@ -117,21 +174,14 @@ class PingSensorESP32 : public PingSensor {
     esp_ping_delete_session(hdl);
   }
 
-  void cmd_ping_on_ping_timeout(esp_ping_handle_t hdl) {
-    uint16_t seqno;
-    ip_addr_t target_addr;
-    esp_ping_get_profile(hdl, ESP_PING_PROF_SEQNO, &seqno, sizeof(seqno));
-    esp_ping_get_profile(hdl, ESP_PING_PROF_IPADDR, &target_addr, sizeof(target_addr));
-    ESP_LOGV(TAG, "From %s icmp_seq=%d timeout", ipaddr_ntoa((ip_addr_t *) &target_addr), seqno);
-  }
-
  protected:
-  std::string tag = "ping_esp32";
+//  std::string tag = "ping_esp32";
   esp_ping_config_t ping_config = ESP_PING_DEFAULT_CONFIG();
   esp_ping_handle_t ping;
   esp_ping_callbacks_t cbs;
 
   void init_ping() {
+/*
     ip_addr_t target_addr;
     int err;
 
@@ -146,6 +196,45 @@ class PingSensorESP32 : public PingSensor {
       this->status_set_warning();
       return;
     }
+*/
+    // parse IP address
+#if CONFIG_LWIP_IPV6
+    struct sockaddr_in6 sock_addr6;
+#endif
+    ip_addr_t target_addr;
+    memset(&target_addr, 0, sizeof(target_addr));
+#if CONFIG_LWIP_IPV6
+    if (inet_pton(AF_INET6, target.c_str(), &sock_addr6.sin6_addr) == 1) {
+        // convert ip6 string to ip6 address
+        ipaddr_aton(target.c_str(), &target_addr);
+    } else {
+#endif
+        struct addrinfo hint;
+        struct addrinfo *res = NULL;
+        memset(&hint, 0, sizeof(hint));
+        // convert ip4 string or hostname to ip4 or ip6 address
+        if (getaddrinfo(target.c_str(), NULL, &hint, &res) != 0) {
+            //printf("ping: unknown host %s\n", ping_args.host->sval[0]);
+            //ESP_LOGE(tag.c_str(), "unknown host: %s", target.c_str());
+            ESP_LOGE(TAG, "unknown host: %s", target.c_str());
+            this->status_set_warning();
+            return;
+        }
+#if CONFIG_LWIP_IPV6
+        if (res->ai_family == AF_INET) {
+#endif
+            struct in_addr addr4 = ((struct sockaddr_in *) (res->ai_addr))->sin_addr;
+            inet_addr_to_ip4addr(ip_2_ip4(&target_addr), &addr4);
+#if CONFIG_LWIP_IPV6
+        } else {
+            struct in6_addr addr6 = ((struct sockaddr_in6 *) (res->ai_addr))->sin6_addr;
+            inet6_addr_to_ip6addr(ip_2_ip6(&target_addr), &addr6);
+        }
+#endif
+        freeaddrinfo(res);
+#if CONFIG_LWIP_IPV6
+    }
+#endif
 
     ping_config.target_addr = target_addr;
     ping_config.count = n_packet;
